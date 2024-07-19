@@ -14,7 +14,8 @@ import sys
 import os
 
 class GroupParams:
-    pass
+    def __init__(self):
+        self.data_device = "cuda"
 
 class ParamGroup:
     def __init__(self, parser: ArgumentParser, name : str, fill_none = False):
