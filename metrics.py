@@ -52,6 +52,8 @@ def evaluate(model_paths):
             test_dir = Path(scene_dir) / "test"
 
             for method in os.listdir(test_dir):
+                if method not in ["frustum_voxels_65"]:
+                    continue
                 print("Method:", method)
 
                 full_dict[scene_dir][method] = {}
@@ -60,35 +62,47 @@ def evaluate(model_paths):
                 per_view_dict_polytopeonly[scene_dir][method] = {}
 
                 method_dir = test_dir / method
-                gt_dir = method_dir/ "gt"
-                renders_dir = method_dir / "renders"
-                renders, gts, image_names = readImages(renders_dir, gt_dir)
+                gt_dir = method_dir / "progressive_30000_1.0"
+                # gt_dir = method_dir / "gt"
+                # renders_dir = method_dir / "renders"
 
-                ssims = []
-                psnrs = []
-                lpipss = []
+                for i in range(10, 110, 10):
+                    p = i / 100
 
-                for idx in tqdm(range(len(renders)), desc="Metric evaluation progress"):
-                    ssims.append(ssim(renders[idx], gts[idx]))
-                    psnrs.append(psnr(renders[idx], gts[idx]))
-                    lpipss.append(lpips(renders[idx], gts[idx], net_type='vgg'))
+                    renders, gts, image_names = readImages(method_dir / f"progressive_30000_{p}", gt_dir)
 
-                print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
-                print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".5"))
-                print("  LPIPS: {:>12.7f}".format(torch.tensor(lpipss).mean(), ".5"))
-                print("")
+                    ssims = []
+                    psnrs = []
+                    lpipss = []
 
-                full_dict[scene_dir][method].update({"SSIM": torch.tensor(ssims).mean().item(),
-                                                        "PSNR": torch.tensor(psnrs).mean().item(),
-                                                        "LPIPS": torch.tensor(lpipss).mean().item()})
-                per_view_dict[scene_dir][method].update({"SSIM": {name: ssim for ssim, name in zip(torch.tensor(ssims).tolist(), image_names)},
-                                                            "PSNR": {name: psnr for psnr, name in zip(torch.tensor(psnrs).tolist(), image_names)},
-                                                            "LPIPS": {name: lp for lp, name in zip(torch.tensor(lpipss).tolist(), image_names)}})
+                    for idx in tqdm(range(len(renders)), desc=f"Metric evaluation progress {i}%"):
+                        ssims.append(ssim(renders[idx], gts[idx]))
+                        psnr_val = psnr(renders[idx], gts[idx])
+                        if (torch.isinf(psnr_val)):
+                            psnr_val = torch.full_like(psnr_val, 70)
+                        psnrs.append(psnr_val)
+                        lpipss.append(lpips(renders[idx], gts[idx], net_type='vgg'))
 
-            with open(scene_dir + "/results.json", 'w') as fp:
-                json.dump(full_dict[scene_dir], fp, indent=True)
-            with open(scene_dir + "/per_view.json", 'w') as fp:
-                json.dump(per_view_dict[scene_dir], fp, indent=True)
+                    print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
+                    print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".5"))
+                    print("  LPIPS: {:>12.7f}".format(torch.tensor(lpipss).mean(), ".5"))
+                    print("")
+
+                    full_dict[scene_dir][method].update({"SSIM": torch.tensor(ssims).mean().item(),
+                                                            "PSNR": torch.tensor(psnrs).mean().item(),
+                                                            "LPIPS": torch.tensor(lpipss).mean().item()})
+                    per_view_dict[scene_dir][method].update({"SSIM": {name: ssim for ssim, name in zip(torch.tensor(ssims).tolist(), image_names)},
+                                                                "PSNR": {name: psnr for psnr, name in zip(torch.tensor(psnrs).tolist(), image_names)},
+                                                                "LPIPS": {name: lp for lp, name in zip(torch.tensor(lpipss).tolist(), image_names)}})
+                    with open(f"{scene_dir}\\test\\{method}\\results_{p}.json", 'w') as fp:
+                        json.dump(full_dict[scene_dir], fp, indent=True)
+                    with open(f"{scene_dir}\\test\\{method}\\per_view_{p}.json", 'w') as fp:
+                        json.dump(per_view_dict[scene_dir], fp, indent=True)
+
+                full_dict[scene_dir][method] = {}
+                per_view_dict[scene_dir][method] = {}
+                full_dict_polytopeonly[scene_dir][method] = {}
+                per_view_dict_polytopeonly[scene_dir][method] = {}
         except:
             print("Unable to compute metrics for model", scene_dir)
 

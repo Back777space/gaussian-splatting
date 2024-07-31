@@ -3,130 +3,213 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+from progressive.gaussian_data import GaussianData
+from progressive.octree import build_octree, traverse_for_indices
 import torch
+from progressive.weights import *
 from scene import Scene
 import os
 from tqdm import tqdm
 from os import makedirs
 from gaussian_renderer import render
 import torchvision
+from scene.cameras import Camera
 from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 import copy
+import time
+import numpy as np
+
+# TODO: refactor, test andere scenes
 
 def render_set(
-        model_path, 
-        name, 
-        iteration, 
-        views, 
-        gaussians: GaussianModel, 
-        pipeline, 
+        model_path,
+        name,
+        iteration,
+        views,
+        gaussians: GaussianModel,
+        pipeline,
         background,
-        percentage_loaded = 1
     ):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
-    progressive_path = os.path.join(model_path, name, "progressive_{}_{}_{}"
-                                .format(iteration, percentage_loaded, "scalevc"))
 
     makedirs(render_path, exist_ok=True)
     makedirs(gts_path, exist_ok=True)
-    makedirs(progressive_path, exist_ok=True)
-
-    # data for each gaussian: 
-    # (
-    #   amount of views it is in, 
-    #   total contribution over all views,
-    #   opacity,
-    #   scale,
-    # )
-    gaussian_amt = gaussians.get_opacity.shape[0]
-    gaussian_data = torch.zeros(gaussian_amt, 4, dtype=torch.float32)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         output = render(view, gaussians, pipeline, background)
         rendering = output["render"]
+
+        gt = view.original_image[0:3, :, :]
+        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+
+def render_progressive(
+        model_path,
+        name,
+        iteration,
+        views,
+        gaussians,
+        background,
+    ):
+    octree = build_octree(gaussians)
+    gaussian_data = GaussianData(gaussians)
+    gaussian_amt = gaussians._opacity.shape[0]
+
+    method_path = os.path.join(model_path, name, "frustum_voxels_65")
+    makedirs(method_path, exist_ok=True)
+    gts_path = os.path.join(method_path, "gt")
+    makedirs(gts_path, exist_ok=True)
+    
+    # set up gaussian data
+    for idx, view in enumerate(tqdm(views, desc="Pre-processing Gaussians")):
+        output = render(view, gaussians, pipeline, background)
         ids_per_pixel = output["ids_per_pixel"]
         contr_per_pixel = output["contr_per_pixel"]
-        update_gaussian_view_data(
-            gaussian_data,
+        gaussian_data.update(
             ids_per_pixel,
             contr_per_pixel,
-            gaussians
         )
-        
         # gt = view.original_image[0:3, :, :]
-        # torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         # torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
-    weights = weigh_gaussians(gaussian_data)
-    largest_k_values, largest_k_indices = torch.topk(
-        weights,
-        int(gaussian_amt * percentage_loaded),
-        largest=True
+    # order = get_indices_to_render(
+    #     gaussian_data,
+    #     octree,
+    #     gaussian_amt,
+    #     1.0, False
+    # )
+
+    # render progressive [0.1 - 1]
+    for i in range(10, 110, 10):
+        p = i / 100
+        progressive_path = os.path.join(method_path, "progressive_{}_{}".format(iteration, p))
+        makedirs(progressive_path, exist_ok=True)
+        
+        # gaussians_c = copy.deepcopy(gaussians)
+        # order = get_indices_to_render(
+        #     gaussian_data,
+        #     octree,
+        #     gaussian_amt,
+        #     p, True
+        # )
+        # GaussianData.mask_gaussians(gaussians_c, order)
+
+        for idx, view in enumerate(tqdm(views, desc=f"Progressive loading {i}%")):
+            gaussians_c = copy.deepcopy(gaussians)
+            
+            # s = time.time()
+            in_frustum_mask = frustum_check(gaussians_c, view)
+            in_frustum_indices = torch.nonzero(in_frustum_mask, as_tuple=False).squeeze()
+            # e = time.time()
+            # print((e - s) * 1000, "ms")
+
+            # order = get_indices_to_render(
+            #     gaussian_data,
+            #     octree,
+            #     gaussian_amt,
+            #     p, True, in_frustum_indices
+            # )
+            
+            # numpy intersection ruins order
+            # indices = np.intersect1d(order.cpu(), in_frustum_indices.cpu())
+            GaussianData.mask_gaussians(gaussians_c, in_frustum_indices)
+            data = GaussianData(gaussians_c)
+            most_contributing_in_frustum = get_indices_to_render(
+                data,
+                octree,
+                gaussian_amt,
+                p, False
+            )
+            GaussianData.mask_gaussians(gaussians_c, most_contributing_in_frustum)
+
+            rendering = render(view, gaussians_c, pipeline, background)["render"]
+            torchvision.utils.save_image(rendering, os.path.join(progressive_path, '{0:05d}'.format(idx) + ".png"))
+
+def get_indices_to_render(gaussian_data, octree, total_amt_gaussians, percentage, voxels=False, frustum=None):
+    if voxels:
+        return indices_octree(
+            octree, percentage, 
+            lambda mask, weigh_f, amt: torch.topk(
+                weigh_f(gaussian_data, mask),
+                amt,
+                largest=True
+            ), frustum
+        )
+    else:
+        weights = weigh_contrib(gaussian_data, None) * 0.65 + weigh_antimatter(gaussian_data, None) * 0.35 
+        largest_k_values, largest_k_indices = torch.topk(
+            weights,
+            int(total_amt_gaussians * percentage),
+            largest=True
+        )
+        return largest_k_indices
+
+
+def avg_col(rgbs, largest_indices):
+    # rgbs[largest_indices]
+    return torch.mean(rgbs).item()
+
+def no_rest(gaussians: GaussianModel, original=None, exclude_indices=None):
+    gaussians._features_rest = torch.zeros_like(gaussians._features_rest).cuda()
+    if exclude_indices is not None:
+        gaussians._features_rest[exclude_indices] = original._features_rest[exclude_indices]
+
+
+def set_col(gaussians: GaussianModel, col, exclude_indices, original: GaussianModel, rest=True):
+    gaussians._features_dc = torch.full(gaussians._features_dc.shape, col).cuda()
+    gaussians._features_dc[exclude_indices] = original._features_dc[exclude_indices]
+    if not rest:
+        no_rest(gaussians, original, exclude_indices)
+
+def indices_octree(octree, p, weight_cb, frustum=None):
+    indices = torch.empty(0, dtype=torch.int32, device='cuda:0')
+    indices = traverse_for_indices(
+        octree.root_node, p, indices,
+        0, weight_cb, frustum
     )
-    partial = copy.deepcopy(gaussians)
-    mask_gaussians(partial, largest_k_indices)
-    for idx, view in enumerate(tqdm(views, desc="Progressive loading")):
-        if idx < 8:
-            continue
-        
-        rendering = render(view, partial, pipeline, background)["render"]
-        torchvision.utils.save_image(rendering, os.path.join(progressive_path, '{0:05d}'.format(idx - 8) + ".png"))
-        
-        if idx > 12:
-            break
+    return indices
 
-def update_gaussian_view_data(
-    gaussian_data: torch.Tensor,
-    ids_per_pixel: torch.Tensor,
-    contr_per_pixel: torch.Tensor,
-    gaussians: GaussianModel,
-):
-    # set viewcount
-    set = torch.unique(ids_per_pixel)
-    set = set.cpu()
-    gaussian_data[set, 0] += 1.0
+# returns size in bytes
+def get_size(gaussians: GaussianModel):
+    dc_coeffs_size = gaussians._features_dc.element_size() * (gaussians._features_dc != 0).all(dim=1).sum().item()
+    rest_coeffs = gaussians._features_rest.element_size() * (gaussians._features_rest != 0).all(dim=1).sum().item()
+    return (dc_coeffs_size, rest_coeffs)
+
+
+def write_sh_size(gaussians, model_path, name, p):
+    size = get_size(gaussians)
+    with open(os.path.join(model_path, name, "avgnorest_full") + ".txt", "a") as f:
+        f.write(f"\n{p}\ndeg 0 coeffs: {size[0]/1000000} MB\n")
+        f.write(f"rest coeffs: {size[1]/1000000} MB\n\n")
+
+def frustum_check(gaussians: GaussianModel, cam: Camera):
+    transform = cam.full_proj_transform
+    positions = gaussians.get_xyz
+
+    ones = torch.ones((positions.shape[0], 1), dtype=positions.dtype).cuda()
+    positions_homo = torch.cat((positions, ones), dim=1)
+    transformed = positions_homo @ transform
+    pos = transformed[..., :3] / transformed[..., 3:]
     
-    # set total contribution
-    ids_per_pixel = ids_per_pixel.cpu()
-    contr_per_pixel = contr_per_pixel.cpu()
-    gaussian_data[ids_per_pixel, 1] += contr_per_pixel
-
-    # set scale and opacity
-    gaussian_data[:, 2] = gaussians._opacity[:, 0]
-    gaussian_data[:, 3] = torch.prod(torch.exp(gaussians._scaling), dim=1)
+    # z >= cam.znear & z <= cam.zfar ?
+    in_frustum = (
+        (pos[..., 0] >= -1.5) & (pos[..., 0] <= 1.5) &
+        (pos[..., 1] >= -1.5) & (pos[..., 1] <= 1.5) 
+    )
+    return in_frustum
 
 
-def normalize(t: torch.Tensor):
-    return (t - torch.min(t)) / (torch.max(t) - torch.min(t))
-
-
-def weigh_gaussians(gaussian_data):
-    normalized_opacity = normalize(gaussian_data[:,2])
-    normalized_scale = normalize(gaussian_data[:,3])
-    normalized_vc = normalize(gaussian_data[:,0])
-    normalized_contr = normalize(gaussian_data[:,1])
-
-    return 0.001 * normalized_vc + normalized_scale * 0.999
-
-def mask_gaussians(gaussians, mask):
-    gaussians._opacity = gaussians._opacity[mask] 
-    gaussians._xyz = gaussians._xyz[mask]
-    gaussians._scaling = gaussians._scaling[mask]
-    gaussians._features_dc = gaussians._features_dc[mask]
-    gaussians._features_rest = gaussians._features_rest[mask]
-    gaussians._rotation = gaussians._rotation[mask]
-
-def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool):
+def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, prog: bool):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
@@ -134,21 +217,15 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
+        if prog:
+            render_progressive(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, background)
+            return
+
         if not skip_train:
             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
 
         if not skip_test:
-            for i in range(10, 100, 10):
-                render_set(
-                    dataset.model_path,
-                    "test", 
-                    scene.loaded_iter, 
-                    scene.getTestCameras(), 
-                    gaussians, 
-                    pipeline, 
-                    background,
-                    i / 100
-                )
+            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background)
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -159,10 +236,11 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--progressive", action="store_true")
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test)
+    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.progressive)
