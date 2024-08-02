@@ -6,7 +6,7 @@ import torch
 
 LARGE_LEAF_THRESHOLD = 0
 MAX_TREE_DEPTH = 3
-MAIN_STRAT_PERCENTAGE = 0.65
+MAIN_STRAT_PERCENTAGE = 0.8
 
 def build_octree(gaussians: GaussianModel):
     print("Octree build started")
@@ -37,7 +37,7 @@ def traverse_for_indices(node, p, indices, depth, weight_cb, frustum=None):
         points_main_strat = int(points_rendered * MAIN_STRAT_PERCENTAGE)
         points_scnd_strat = points_rendered - points_main_strat 
 
-        _, largest_k_indices_main = weight_cb(node_indices_t, weigh_contrib, points_main_strat)
+        _, largest_k_indices_main = weight_cb(node_indices_t, weigh_contr_vc, points_main_strat)
 
         # remove splats that have been chosen by the main strat so we dont select them again with the secondary one
         filtered_t = reverse_mask(node_indices_t, largest_k_indices_main)

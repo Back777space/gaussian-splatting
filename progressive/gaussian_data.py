@@ -11,6 +11,15 @@ class GaussianData:
         self.contrib = torch.squeeze(torch.zeros(amount, 1, dtype=torch.float32)).cuda()
         self.rgbs = torch.squeeze(torch.zeros(amount, 3, dtype=torch.float32)).cuda()
 
+    def __eq__(self, other) : 
+        return (
+            self.opacity == other.opacity &
+            self.scale == other.scale & 
+            self.viewcount == other.viewcount & 
+            self.contrib == other.contrib & 
+            self.rgbs == other.rgbs
+        )
+
     def update(
         self,
         ids_per_pixel: torch.Tensor,
@@ -18,11 +27,14 @@ class GaussianData:
     ):
         # set viewcount
         set = torch.unique(ids_per_pixel)
-        set = set.cpu()
-        self.viewcount[set] += 1
+        self.viewcount.index_add_(0, set, torch.ones_like(set, dtype=torch.int32))
 
         # set total contribution
-        self.contrib[ids_per_pixel] += contr_per_pixel
+        self.contrib.index_add_(0, ids_per_pixel, contr_per_pixel)
+
+        # dit werkt voor de kloten
+        # self.viewcount[set] += 1
+        # self.contrib[ids_per_pixel] += contr_per_pixel
 
     @staticmethod
     def mask_gaussians(gaussians: GaussianModel, mask):
@@ -32,3 +44,4 @@ class GaussianData:
         gaussians._features_dc = gaussians._features_dc[mask]
         gaussians._features_rest = gaussians._features_rest[mask]
         gaussians._rotation = gaussians._rotation[mask]
+

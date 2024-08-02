@@ -41,10 +41,10 @@ def weigh_vc_scale(gaussian_data, mask=None):
     return 0.5 * weigh_scale(gaussian_data, mask) + 0.5 * weigh_vc(gaussian_data, mask)
 
 def weigh_contr_vc(gaussian_data, mask=None):
-    return 0.8 * weigh_contrib(gaussian_data, mask) + 0.2 * weigh_vc(gaussian_data, mask)
+    return 0.65 * weigh_contrib(gaussian_data, mask) + 0.35 * weigh_vc(gaussian_data, mask)
 
-def weigh_gaussians_13contr_57scale_30vc(gaussian_data: GaussianData, mask=None):
-    return 0.13 + weigh_contrib(gaussian_data, mask) + 0.57 * weigh_scale(gaussian_data, mask) + 0.30 * weigh_vc(gaussian_data, mask)
+def weigh_gaussians_57contr_13scale_30vc(gaussian_data: GaussianData, mask=None):
+    return 0.57 + weigh_contrib(gaussian_data, mask) + 0.13 * weigh_scale(gaussian_data, mask) + 0.30 * weigh_vc(gaussian_data, mask)
 
 def weigh_antimatter(gaussian_data: GaussianData, mask=None):
     if mask is None:

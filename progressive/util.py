@@ -10,3 +10,6 @@ def reverse_mask(tensor, m):
     mask = torch.ones_like(tensor, dtype=torch.bool, device='cuda:0')
     mask[m] = False
     return tensor[mask]
+
+def empty_tensor():
+    return torch.empty(0, device='cuda:0', dtype=torch.long)

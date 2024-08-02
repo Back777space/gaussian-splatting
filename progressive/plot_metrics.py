@@ -16,7 +16,7 @@ def make_plot(name: str, per_method, test_dir):
 r = range(10,100,10)
 
 def evaluate(model_paths):
-    methods = ["antimatter", "30vc13contr57scale", "voxels_contr_antimatter_65_depth_3"]
+    methods = ["voxels_contr_antimatter_80_depth_3_fixed", "antimatter", "30vc13contr57scale", "voxels_contr_antimatter_65_depth_3"]
 
     for scene_dir in model_paths:
         print("Scene:", scene_dir)
