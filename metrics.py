@@ -52,7 +52,7 @@ def evaluate(model_paths):
             test_dir = Path(scene_dir) / "test"
 
             for method in os.listdir(test_dir):
-                if method not in ["frustum_voxels_65"]:
+                if method not in ["30vc13contr57scale", "antimatter", "voxels_contr_antimatter_65_depth_3"]:
                     continue
                 print("Method:", method)
 
@@ -99,6 +99,7 @@ def evaluate(model_paths):
                     with open(f"{scene_dir}\\test\\{method}\\per_view_{p}.json", 'w') as fp:
                         json.dump(per_view_dict[scene_dir], fp, indent=True)
 
+                # reset
                 full_dict[scene_dir][method] = {}
                 per_view_dict[scene_dir][method] = {}
                 full_dict_polytopeonly[scene_dir][method] = {}
