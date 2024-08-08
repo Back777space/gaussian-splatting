@@ -18,7 +18,7 @@ def weigh_contrib(gaussian_data: GaussianData, mask):
         contrib = gaussian_data.contrib
     else:
         contrib = gaussian_data.contrib[mask]
-    return normalize(contrib)
+    return contrib
 
 def weigh_opacity(gaussian_data: GaussianData, mask):
     if mask is None:
@@ -33,6 +33,9 @@ def weigh_scale(gaussian_data: GaussianData, mask):
     else:
         scale = gaussian_data.scale[mask]
     return normalize(torch.sum(scale, 1))
+
+def weight_contrib_antimatter(gaussian_data, mask=None):
+    return 0.8 * weigh_contrib(gaussian_data, mask) + 0.2 * weigh_antimatter(gaussian_data, mask)
 
 def weigh_vc_antimatter(gaussian_data, mask=None):
     return 0.7 * weigh_antimatter(gaussian_data, mask) + 0.3 * weigh_vc(gaussian_data, mask)

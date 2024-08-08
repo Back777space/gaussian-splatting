@@ -9,10 +9,11 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import time
 from progressive.gaussian_data import GaussianData
 from progressive.octree import build_octree, count_leaves, traverse_for_indices
 import torch
-from progressive.util import empty_tensor, intersect_tensors_no_loop
+from progressive.util import empty_tensor
 from progressive.weights import *
 from scene import Scene
 import os
@@ -58,11 +59,13 @@ def render_progressive(
         gaussians,
         background,
     ):
-    # octree = build_octree(gaussians)
+    s = time.time()
+
+    octree = build_octree(gaussians)
     gaussian_data = GaussianData(gaussians)
     gaussian_amt = gaussian_data.opacity.numel()
 
-    method_path = os.path.join(model_path, name, "frustum_test2")
+    method_path = os.path.join(model_path, name, "voxels_fixed")
     makedirs(method_path, exist_ok=True)
     gts_path = os.path.join(method_path, "gt")
     makedirs(gts_path, exist_ok=True)
@@ -79,36 +82,33 @@ def render_progressive(
         # gt = view.original_image[0:3, :, :]
         # torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
-    # doesn't work yet
-    # primary_indices, scnd_indices, remaining_indices = get_indices(
-    #     1, gaussian_data, frustum=None, octree=octree
-    # )
-    # order = torch.cat((primary_indices, scnd_indices, remaining_indices), dim=0) 
+    ends = []
 
-    # order = get_indices_to_render(
-    #     gaussian_data, 
-    #     1.0
-    # )
 
     # ------------ FRUSTUM CODE ------------
-    # s = time.time()
-    in_frustum_mask = frustum_check(gaussians, views[0])
-    in_frustum_indices = torch.nonzero(in_frustum_mask, as_tuple=False).squeeze()
-    out_frustum_indices = torch.nonzero(in_frustum_mask == False, as_tuple=False).squeeze()
-    # e = time.time()
-    # print((e - s) * 1000, "ms")
+    # in_frustum_mask = frustum_check(gaussians, views[0])
+    # in_frustum_indices = torch.nonzero(in_frustum_mask, as_tuple=False).squeeze()
+    # out_frustum_indices = torch.nonzero(in_frustum_mask == False, as_tuple=False).squeeze()
 
-    indices_f = get_indices_to_render(
-        gaussian_data, in_frustum_indices.numel()/gaussian_amt, 
-        frustum=in_frustum_indices, octree=None
-    )
-    order_in_frustum = in_frustum_indices[indices_f]
-    indices_of = get_indices_to_render(
-        gaussian_data, out_frustum_indices.numel()/gaussian_amt, 
-        frustum=out_frustum_indices, octree=None
-    )
-    order_out_frustum = out_frustum_indices[indices_of]
+    # indices_f = get_indices_to_render(
+    #     gaussian_data, in_frustum_indices.numel()/gaussian_amt, 
+    #     frustum=in_frustum_indices, octree=None
+    # )
+    # order_in_frustum = in_frustum_indices[indices_f]
+    # indices_of = get_indices_to_render(
+    #     gaussian_data, out_frustum_indices.numel()/gaussian_amt, 
+    #     frustum=out_frustum_indices, octree=None
+    # )
+    # order_out_frustum = out_frustum_indices[indices_of]
     # ------------------------------------------
+
+    ends.append(time.time())
+
+    order = get_indices_to_render(
+        gaussian_data, 
+        1.0,
+        octree=octree
+    )
 
     # render progressive [0.1 - 1]
     for i in range(10, 110, 10):
@@ -116,63 +116,36 @@ def render_progressive(
         progressive_path = os.path.join(method_path, "progressive_{}_{}".format(iteration, p))
         makedirs(progressive_path, exist_ok=True)
         
-        # order = get_indices_to_render(
-        #     gaussian_data, p, 
-        #     frustum=None, octree=octree
-        # )
-        # gaussians_c = copy.deepcopy(gaussians)
-        # GaussianData.mask_gaussians(gaussians_c, order) # [:int(gaussian_amt * p)]
+        gcpy = copy.deepcopy(gaussians)
+        GaussianData.mask_gaussians(gcpy, order[:int(gaussian_amt * p)])
 
+        # ------------ FRUSTUM CODE ------------
+        # rendered_in_frustum = min(p, in_frustum_indices.numel() / gaussian_amt)
+        # rendered_out_frustum = p - rendered_in_frustum
+
+        # part1 = order_in_frustum[:int(gaussian_amt * rendered_in_frustum)]
+        # part2 = order_out_frustum[:int(gaussian_amt * rendered_out_frustum)]
+        # indices = torch.cat((part1, part2), dim=0)
+        
+        # gcpy = copy.deepcopy(gaussians)
+        # GaussianData.mask_gaussians(gcpy, indices)
+        # ------------------------------------------
+        
         for idx, view in enumerate(tqdm(views, desc=f"Progressive loading {i}%")):
-            # ------------ FRUSTUM CODE ------------
-            rendered_in_frustum = min(p, in_frustum_indices.numel() / gaussian_amt)
-            rendered_out_frustum = p - rendered_in_frustum
-
-            part1 = order_in_frustum[:int(gaussian_amt * rendered_in_frustum)]
-            part2 = order_out_frustum[:int(gaussian_amt * rendered_out_frustum)]
-            indices = torch.cat((part1, part2), dim=0)
-            
-            gcpy = copy.deepcopy(gaussians)
-            GaussianData.mask_gaussians(gcpy, indices)
-            # ------------------------------------------
-
             rendering = render(view, gcpy, pipeline, background)["render"]
             torchvision.utils.save_image(rendering, os.path.join(progressive_path, '{0:05d}'.format(idx) + ".png"))
-
-def get_indices(p_initial_strat, gaussian_data, frustum, octree):
-    gaussian_amt = gaussian_data.opacity.numel()
-    p_end_scnd_strat = 0.9
-
-    initial_indices = get_indices_to_render(
-        gaussian_data, p_initial_strat, 
-        frustum=frustum, octree=octree
-    )
-    if p_initial_strat == 1:
-        return (initial_indices, empty_tensor(), empty_tensor())
-    
-    second_indices = get_indices_to_render(
-        gaussian_data, 1, 
-        frustum=frustum, octree=octree
-    )[int(gaussian_amt * p_initial_strat):int(gaussian_amt * p_end_scnd_strat)]
-
-    # Filter out indices in second_indices that are also in initial_indices
-    mask = ~torch.isin(second_indices, initial_indices)
-    second_indices = second_indices[mask]
-
-    all_indices = torch.ones(gaussian_amt, dtype=torch.bool, device='cuda:0')
-    all_indices[initial_indices] = False; all_indices[second_indices] = False
-    remaining_indices = torch.nonzero(all_indices, as_tuple=False).squeeze()
-    
-    return (initial_indices, second_indices, remaining_indices)
-
-
+        ends.append(time.time())
+        
+    # write_timing(s, ends, model_path, name, "frustum_octree")
+        
 def get_indices_to_render(
         gaussian_data: GaussianData,
         percentage: float,
         octree=None, frustum=None
     ):
+    order = None
     if octree is not None:
-        return indices_octree(
+        order = indices_octree(
             octree, percentage, 
             lambda mask, weigh_f, amt: torch.topk(
                 weigh_f(gaussian_data, mask),
@@ -182,51 +155,39 @@ def get_indices_to_render(
         )
     else:
         weights = weigh_contrib(gaussian_data, frustum)
-        largest_k_values, largest_k_indices = torch.topk(
+        _, largest_k_indices = torch.topk(
             weights,
             int(gaussian_data.opacity.numel() * percentage),
             largest=True
         )
-        return largest_k_indices
+        order = largest_k_indices
+
+    assert order.numel() == gaussian_data.opacity.numel(), "Gaussians got lost in the ordering process"
+    return order
 
 
-def avg_col(rgbs, largest_indices):
-    # rgbs[largest_indices]
-    return torch.mean(rgbs).item()
-
-def no_rest(gaussians: GaussianModel, original=None, exclude_indices=None):
-    gaussians._features_rest = torch.zeros_like(gaussians._features_rest).cuda()
-    if exclude_indices is not None:
-        gaussians._features_rest[exclude_indices] = original._features_rest[exclude_indices]
-
-
-def set_col(gaussians: GaussianModel, col, exclude_indices, original: GaussianModel, rest=True):
+def set_col(gaussians: GaussianModel, col, exclude_indices, original: GaussianModel):
     gaussians._features_dc = torch.full(gaussians._features_dc.shape, col).cuda()
     gaussians._features_dc[exclude_indices] = original._features_dc[exclude_indices]
-    if not rest:
-        no_rest(gaussians, original, exclude_indices)
 
 def indices_octree(octree, p, weight_cb, frustum=None):
-    indices = torch.empty(0, dtype=torch.int32, device='cuda:0')
+    indices = empty_tensor()
     # print(count_leaves(octree.root_node, 0))
-    indices = traverse_for_indices(
-        octree.root_node, p, indices,
-        0, weight_cb, frustum
-    )
+
+    # we can't just use indices_octree(1.0)[:percentage] because every gaussian of a voxel that was traversed first 
+    # will be in front of the gaussians from other voxels, eventhough the others may have a higher importance
+    for i in range(10, int(p*100)+10, 10):
+        p = i / 100
+        t = empty_tensor()
+        voxel_parts = traverse_for_indices(
+            octree.root_node, p-0.1, p, t,
+            weight_cb, frustum
+        )
+        # exclude elements already in indices
+        mask = ~torch.isin(voxel_parts, indices)
+        filtered_t = voxel_parts[mask]
+        indices = torch.cat((indices, filtered_t), dim=0)
     return indices
-
-# returns size in bytes
-def get_size(gaussians: GaussianModel):
-    dc_coeffs_size = gaussians._features_dc.element_size() * (gaussians._features_dc != 0).all(dim=1).sum().item()
-    rest_coeffs = gaussians._features_rest.element_size() * (gaussians._features_rest != 0).all(dim=1).sum().item()
-    return (dc_coeffs_size, rest_coeffs)
-
-
-def write_sh_size(gaussians, model_path, name, p):
-    size = get_size(gaussians)
-    with open(os.path.join(model_path, name, "avgnorest_full") + ".txt", "a") as f:
-        f.write(f"\n{p}\ndeg 0 coeffs: {size[0]/1000000} MB\n")
-        f.write(f"rest coeffs: {size[1]/1000000} MB\n\n")
 
 def frustum_check(gaussians: GaussianModel, cam: Camera):
     transform = cam.full_proj_transform
@@ -235,12 +196,16 @@ def frustum_check(gaussians: GaussianModel, cam: Camera):
     ones = torch.ones((positions.shape[0], 1), dtype=positions.dtype).cuda()
     positions_homo = torch.cat((positions, ones), dim=1)
     transformed = positions_homo @ transform
-    pos = transformed[..., :3] / transformed[..., 3:]
+
+    # check z axis before full division
+    in_frustum_z = transformed[..., 2] >= 0
+
+    pos = transformed[..., :3] / transformed[..., 2:3]
 
     in_frustum = (
         (pos[..., 0] >= -1.5) & (pos[..., 0] <= 1.5) &
         (pos[..., 1] >= -1.5) & (pos[..., 1] <= 1.5) &
-        (pos[..., 2] <= 1) 
+        in_frustum_z 
     )
     return in_frustum
 

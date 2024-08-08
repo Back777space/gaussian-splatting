@@ -52,7 +52,7 @@ def evaluate(model_paths):
             test_dir = Path(scene_dir) / "test"
 
             for method in os.listdir(test_dir):
-                if method not in ["30vc13contr57scale", "antimatter", "voxels_contr_antimatter_65_depth_3"]:
+                if method not in ["voxels_fixed"]:
                     continue
                 print("Method:", method)
 
@@ -77,10 +77,7 @@ def evaluate(model_paths):
 
                     for idx in tqdm(range(len(renders)), desc=f"Metric evaluation progress {i}%"):
                         ssims.append(ssim(renders[idx], gts[idx]))
-                        psnr_val = psnr(renders[idx], gts[idx])
-                        if (torch.isinf(psnr_val)):
-                            psnr_val = torch.full_like(psnr_val, 70)
-                        psnrs.append(psnr_val)
+                        psnrs.append(torch.clamp(psnr(renders[idx], gts[idx]), max=100))
                         lpipss.append(lpips(renders[idx], gts[idx], net_type='vgg'))
 
                     print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
