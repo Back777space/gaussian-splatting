@@ -1,5 +1,7 @@
 import torch
+from tqdm import tqdm
 
+from gaussian_renderer import render
 from scene.gaussian_model import GaussianModel
 
 class GaussianData:
@@ -19,6 +21,19 @@ class GaussianData:
             self.contrib == other.contrib & 
             self.rgbs == other.rgbs
         )
+    
+    def set_ids_and_contr(self, gaussians, views, pipeline, background):
+        for idx, view in enumerate(tqdm(views, desc="Pre-processing Gaussians")):
+            output = render(view, gaussians, pipeline, background)
+            ids_per_pixel = output["ids_per_pixel"]
+            contr_per_pixel = output["contr_per_pixel"]
+            self.update(
+                ids_per_pixel,
+                contr_per_pixel,
+            )
+            # save_mask(view, contr_per_pixel, os.path.join(model_path, name), '{0:05d}'.format(idx))
+            # gt = view.original_image[0:3, :, :]
+            # torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
     def update(
         self,

@@ -2,7 +2,7 @@ import torch
 from progressive.gaussian_data import GaussianData
 
 def normalize(t: torch.Tensor):
-    if t.numel() == 0:
+    if t.shape[0] == 0:
         return t
     return (t - torch.min(t)) / (torch.max(t) - torch.min(t))
 

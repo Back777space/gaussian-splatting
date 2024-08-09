@@ -5,7 +5,7 @@ from scene.gaussian_model import GaussianModel
 import torch
 from math import ceil
 
-MAX_TREE_DEPTH = 2
+MAX_TREE_DEPTH = 1
 
 def build_octree(gaussians: GaussianModel):
     print("Octree build started")
@@ -14,7 +14,6 @@ def build_octree(gaussians: GaussianModel):
     print("Octree build done")
     # o3d.visualization.draw_geometries([octree])
     return octree
-
 
 def build_point_cloud(gaussians: GaussianModel):
     pcd = o3d.geometry.PointCloud()
@@ -33,9 +32,9 @@ def traverse_for_indices(node, pstart, pend, indices, weight_cb, frustum=None):
         if frustum is not None:
             node_indices_t = intersect_tensors_no_loop(node_indices_t, frustum)
 
-        total_points_amt = node_indices_t.numel()
+        total_points_amt = node_indices_t.shape[0]
 
-        _, largest_k_indices_main = weight_cb(node_indices_t, weigh_contrib, node_indices_t.numel())
+        _, largest_k_indices_main = weight_cb(node_indices_t, weigh_contrib, node_indices_t.shape[0])
         largest_k_indices_main = largest_k_indices_main[int(total_points_amt * pstart) : ceil(total_points_amt * pend)]
 
         indices_main = node_indices_t[largest_k_indices_main]

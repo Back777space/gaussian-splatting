@@ -11,17 +11,16 @@ def make_plot(name: str, per_method, test_dir):
     for key, value in per_method.items():
         plt.plot(r, value[name], label=key)
     plt.legend() 
-    plt.savefig(f"{test_dir}\\{name}.png")
+    plt.savefig(f"{test_dir}\\{name}_octreedepths.png")
 
 r = range(10,110,10)
 
 def evaluate(model_paths):
-    methods = ["contrib_fixed", "antimatter", "voxels_fixed"]
+    methods = ["contrib_depth_1", "contrib_depth_2", "contrib_depth_3", "contrib_depth_4", "contrib_depth_5"]
 
     for scene_dir in model_paths:
         print("Scene:", scene_dir)
         test_dir = Path(scene_dir) / "test"
-        # train_dir = Path(scene_dir) / "train"
         per_method = dict()
 
         for method in methods:
@@ -36,6 +35,7 @@ def evaluate(model_paths):
             for p in r:
                 p = p / 100
                 with open(method_dir / f"results_{p}.json") as f:
+                # with open(method_dir / f"per_view_{p}.json") as f:
                     data = json.load(f)[method]
                     ssims.append(data["SSIM"])
                     psnrs.append(data["PSNR"])
@@ -44,17 +44,6 @@ def evaluate(model_paths):
             per_method[method]["psnr"] = psnrs
             per_method[method]["ssim"] = ssims
             per_method[method]["lpips"] = lpipss
-
-        # plt.figure()
-        # plt.xlabel("percentage of splats rendered")
-        # plt.ylabel("PSNR")
-
-        # ps = [p for p in range(10,100,10)]
-        # for key, value in per_method.items():
-        #     plt.plot(ps, value["psnr"], label=key)
-        
-        # plt.legend() 
-        # plt.savefig(f"{test_dir}\\psnr_frustum_comp.png")
 
         make_plot("psnr", per_method, test_dir)
         make_plot("ssim", per_method, test_dir)

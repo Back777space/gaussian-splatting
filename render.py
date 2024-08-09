@@ -9,9 +9,9 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-import time
 from progressive.gaussian_data import GaussianData
-from progressive.octree import build_octree, count_leaves, traverse_for_indices
+from progressive.mask import save_mask
+from progressive.octree import build_octree, traverse_for_indices
 import torch
 from progressive.util import empty_tensor
 from progressive.weights import *
@@ -58,85 +58,66 @@ def render_progressive(
         views,
         gaussians,
         background,
+        frustum_culling=False,
+        octree=None
     ):
-    s = time.time()
-
-    octree = build_octree(gaussians)
-    gaussian_data = GaussianData(gaussians)
-    gaussian_amt = gaussian_data.opacity.numel()
-
-    method_path = os.path.join(model_path, name, "voxels_fixed")
+    method_path = os.path.join(model_path, name, "contrib_depth_1")
     makedirs(method_path, exist_ok=True)
     gts_path = os.path.join(method_path, "gt")
     makedirs(gts_path, exist_ok=True)
     
-    # set up gaussian data
-    for idx, view in enumerate(tqdm(views, desc="Pre-processing Gaussians")):
-        output = render(view, gaussians, pipeline, background)
-        ids_per_pixel = output["ids_per_pixel"]
-        contr_per_pixel = output["contr_per_pixel"]
-        gaussian_data.update(
-            ids_per_pixel,
-            contr_per_pixel,
+    gaussian_data = GaussianData(gaussians)
+    gaussian_data.set_ids_and_contr(gaussians, views, pipeline, background)
+    gaussian_amt = gaussian_data.opacity.shape[0]
+
+    if frustum_culling:
+        in_frustum_mask = frustum_check(gaussians, views[0])
+        in_frustum_indices = torch.nonzero(in_frustum_mask, as_tuple=False).squeeze()
+        out_frustum_indices = torch.nonzero(in_frustum_mask == False, as_tuple=False).squeeze()
+
+        indices_f = get_indices_to_render(
+            gaussian_data, in_frustum_indices.shape[0]/gaussian_amt, 
+            frustum=in_frustum_indices, octree=octree
         )
-        # gt = view.original_image[0:3, :, :]
-        # torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
-
-    ends = []
-
-
-    # ------------ FRUSTUM CODE ------------
-    # in_frustum_mask = frustum_check(gaussians, views[0])
-    # in_frustum_indices = torch.nonzero(in_frustum_mask, as_tuple=False).squeeze()
-    # out_frustum_indices = torch.nonzero(in_frustum_mask == False, as_tuple=False).squeeze()
-
-    # indices_f = get_indices_to_render(
-    #     gaussian_data, in_frustum_indices.numel()/gaussian_amt, 
-    #     frustum=in_frustum_indices, octree=None
-    # )
-    # order_in_frustum = in_frustum_indices[indices_f]
-    # indices_of = get_indices_to_render(
-    #     gaussian_data, out_frustum_indices.numel()/gaussian_amt, 
-    #     frustum=out_frustum_indices, octree=None
-    # )
-    # order_out_frustum = out_frustum_indices[indices_of]
-    # ------------------------------------------
-
-    ends.append(time.time())
-
-    order = get_indices_to_render(
-        gaussian_data, 
-        1.0,
-        octree=octree
-    )
+        order_in_frustum = in_frustum_indices[indices_f]
+        indices_of = get_indices_to_render(
+            gaussian_data, out_frustum_indices.shape[0]/gaussian_amt, 
+            frustum=out_frustum_indices, octree=octree
+        )
+        order_out_frustum = out_frustum_indices[indices_of]
+    else:
+        order = get_indices_to_render(
+            gaussian_data, 
+            1.0,
+            octree=octree
+        )
 
     # render progressive [0.1 - 1]
     for i in range(10, 110, 10):
         p = i / 100
         progressive_path = os.path.join(method_path, "progressive_{}_{}".format(iteration, p))
         makedirs(progressive_path, exist_ok=True)
-        
+
+        rendered_gaussians = int(p * gaussian_amt)
+        indices = None
+        if frustum_culling:
+            p_in_frustum = p * 0.9
+            rendered_in_frustum = min(p_in_frustum, in_frustum_indices.shape[0] / gaussian_amt)
+            rest = p_in_frustum - rendered_in_frustum
+            rendered_out_frustum = max(rest, p - rendered_in_frustum)
+
+            part1 = order_in_frustum[:int(gaussian_amt * rendered_in_frustum)]
+            part2 = order_out_frustum[:int(gaussian_amt * rendered_out_frustum)]
+            indices = torch.cat((part1, part2), dim=0)
+        else:
+            indices = order[:rendered_gaussians]
+
         gcpy = copy.deepcopy(gaussians)
-        GaussianData.mask_gaussians(gcpy, order[:int(gaussian_amt * p)])
-
-        # ------------ FRUSTUM CODE ------------
-        # rendered_in_frustum = min(p, in_frustum_indices.numel() / gaussian_amt)
-        # rendered_out_frustum = p - rendered_in_frustum
-
-        # part1 = order_in_frustum[:int(gaussian_amt * rendered_in_frustum)]
-        # part2 = order_out_frustum[:int(gaussian_amt * rendered_out_frustum)]
-        # indices = torch.cat((part1, part2), dim=0)
-        
-        # gcpy = copy.deepcopy(gaussians)
-        # GaussianData.mask_gaussians(gcpy, indices)
-        # ------------------------------------------
+        GaussianData.mask_gaussians(gcpy, indices)
         
         for idx, view in enumerate(tqdm(views, desc=f"Progressive loading {i}%")):
             rendering = render(view, gcpy, pipeline, background)["render"]
             torchvision.utils.save_image(rendering, os.path.join(progressive_path, '{0:05d}'.format(idx) + ".png"))
-        ends.append(time.time())
-        
-    # write_timing(s, ends, model_path, name, "frustum_octree")
         
 def get_indices_to_render(
         gaussian_data: GaussianData,
@@ -155,16 +136,12 @@ def get_indices_to_render(
         )
     else:
         weights = weigh_contrib(gaussian_data, frustum)
-        _, largest_k_indices = torch.topk(
+        _, order = torch.topk(
             weights,
-            int(gaussian_data.opacity.numel() * percentage),
+            int(gaussian_data.opacity.shape[0] * percentage),
             largest=True
         )
-        order = largest_k_indices
-
-    assert order.numel() == gaussian_data.opacity.numel(), "Gaussians got lost in the ordering process"
     return order
-
 
 def set_col(gaussians: GaussianModel, col, exclude_indices, original: GaussianModel):
     gaussians._features_dc = torch.full(gaussians._features_dc.shape, col).cuda()
@@ -172,18 +149,19 @@ def set_col(gaussians: GaussianModel, col, exclude_indices, original: GaussianMo
 
 def indices_octree(octree, p, weight_cb, frustum=None):
     indices = empty_tensor()
-    # print(count_leaves(octree.root_node, 0))
+    step = 10
 
     # we can't just use indices_octree(1.0)[:percentage] because every gaussian of a voxel that was traversed first 
     # will be in front of the gaussians from other voxels, eventhough the others may have a higher importance
-    for i in range(10, int(p*100)+10, 10):
+    for i in range(step, int(p*100)+step, step):
         p = i / 100
         t = empty_tensor()
         voxel_parts = traverse_for_indices(
-            octree.root_node, p-0.1, p, t,
+            octree.root_node, p-(step/100), p, t,
             weight_cb, frustum
         )
-        # exclude elements already in indices
+        # exclude elements already in indices 
+        # (avoid using torch.unique here because it messes up the order even when sorted=False)
         mask = ~torch.isin(voxel_parts, indices)
         filtered_t = voxel_parts[mask]
         indices = torch.cat((indices, filtered_t), dim=0)
@@ -197,7 +175,7 @@ def frustum_check(gaussians: GaussianModel, cam: Camera):
     positions_homo = torch.cat((positions, ones), dim=1)
     transformed = positions_homo @ transform
 
-    # check z axis before full division
+    # check z axis before screen space division
     in_frustum_z = transformed[..., 2] >= 0
 
     pos = transformed[..., :3] / transformed[..., 2:3]
@@ -219,8 +197,10 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         if prog:
-            render_progressive(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, background)
-            return
+            octree = build_octree(gaussians)
+            render_progressive(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), 
+                               gaussians, background, frustum_culling=False, octree=octree)
+            return  
 
         if not skip_train:
             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)

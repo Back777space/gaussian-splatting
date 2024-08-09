@@ -1,20 +1,14 @@
 import json
 import os
 import torch
+from scene.cameras import Camera
 from scene.gaussian_model import GaussianModel
 
 def intersect_tensors_no_loop(tensor1, tensor2):
-    unique_tensor2 = torch.unique_consecutive(tensor2)
+    unique_tensor2 = torch.unique(tensor2)
     mask = torch.isin(tensor1, unique_tensor2)
     intersection_tensor = tensor1[mask]
     return intersection_tensor
-
-def unique_keep_order(t):
-    _, inverse_indices = torch.unique(t, return_inverse=True)
-    first_occurrence_mask = torch.zeros_like(t, dtype=torch.bool)
-    first_occurrence_mask[torch.cumsum(first_occurrence_mask.index_add(0, inverse_indices, torch.ones_like(inverse_indices, dtype=torch.bool)), dim=0) == 1] = True
-    unique_in_order_tensor = t[first_occurrence_mask]
-    return unique_in_order_tensor
 
 def reverse_mask(tensor, m):
     mask = torch.ones_like(tensor, dtype=torch.bool, device='cuda:0')
